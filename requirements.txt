@@ -1,0 +1,6 @@
+# This project uses only Python standard library modules.
+# No third-party pip packages are required.
+#
+# Optional non-pip system dependencies:
+# - Graphviz (`dot` command) for exporting automata PNG images
+# - Tkinter support in the Python runtime for the desktop UI
