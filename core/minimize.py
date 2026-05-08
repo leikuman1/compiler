@@ -8,6 +8,7 @@ class DFAMinimizer:
 
     @classmethod
     def minimize(cls, dfa: DFA) -> DFA:
+        dfa = cls.remove_redundant_states(dfa)
         if not dfa.states:
             return dfa
 
@@ -66,6 +67,55 @@ class DFAMinimizer:
         )
 
     @classmethod
+    def remove_redundant_states(cls, dfa: DFA) -> DFA:
+        if not dfa.states:
+            return dfa
+
+        reachable = cls._reachable_states(dfa)
+        productive = cls._productive_states(dfa)
+        keep_states = reachable & productive
+
+        if not keep_states:
+            start_subset = dfa.state_subsets.get(dfa.start_state, frozenset({dfa.start_state}))
+            return DFA(
+                states={dfa.start_state},
+                start_state=dfa.start_state,
+                accept_states=set(),
+                alphabet=set(dfa.alphabet),
+                transitions={},
+                accept_metadata={},
+                state_subsets={dfa.start_state: start_subset},
+            )
+
+        transitions: dict[int, dict[str, int]] = {}
+        # In this project, missing DFA transitions already mean rejection,
+        # so transitions into non-productive states can be dropped safely.
+        for state in keep_states:
+            for symbol, target in dfa.transitions.get(state, {}).items():
+                if target in keep_states:
+                    transitions.setdefault(state, {})[symbol] = target
+
+        accept_metadata = {
+            state: metadata
+            for state, metadata in dfa.accept_metadata.items()
+            if state in keep_states
+        }
+        state_subsets = {
+            state: dfa.state_subsets.get(state, frozenset({state}))
+            for state in keep_states
+        }
+
+        return DFA(
+            states=set(keep_states),
+            start_state=dfa.start_state,
+            accept_states=set(dfa.accept_states & keep_states),
+            alphabet=set(dfa.alphabet),
+            transitions=transitions,
+            accept_metadata=accept_metadata,
+            state_subsets=state_subsets,
+        )
+
+    @classmethod
     def _initial_partitions(cls, dfa: DFA) -> list[set[int]]:
         accepting: dict[tuple[object, ...], set[int]] = {}
         non_accepting: set[int] = set()
@@ -89,6 +139,35 @@ class DFAMinimizer:
             for state in partition:
                 mapping[state] = index
         return mapping
+
+    @classmethod
+    def _reachable_states(cls, dfa: DFA) -> set[int]:
+        reachable = {dfa.start_state}
+        stack = [dfa.start_state]
+        while stack:
+            state = stack.pop()
+            for target in dfa.transitions.get(state, {}).values():
+                if target not in reachable:
+                    reachable.add(target)
+                    stack.append(target)
+        return reachable
+
+    @classmethod
+    def _productive_states(cls, dfa: DFA) -> set[int]:
+        reverse_edges: dict[int, set[int]] = {}
+        for source, mapping in dfa.transitions.items():
+            for target in mapping.values():
+                reverse_edges.setdefault(target, set()).add(source)
+
+        productive = set(dfa.accept_states)
+        stack = list(dfa.accept_states)
+        while stack:
+            state = stack.pop()
+            for source in reverse_edges.get(state, set()):
+                if source not in productive:
+                    productive.add(source)
+                    stack.append(source)
+        return productive
 
     @classmethod
     def _order_partitions(cls, partitions: list[set[int]], start_state: int) -> list[set[int]]:

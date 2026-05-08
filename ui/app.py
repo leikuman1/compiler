@@ -361,8 +361,11 @@ class CompilerCourseApp:
     def validate_regex(self) -> None:
         try:
             self.regex_parser.parse(self.regex_var.get().strip())
-            self.automata_status.set("正规式验证通过，可以继续生成 NFA / DFA / MFA")
+            success_message = "正规式验证通过，可以继续生成 NFA / DFA / MFA。"
+            self.automata_status.set(success_message)
+            messagebox.showinfo("验证结果", success_message)
         except Exception as exc:
+            self.automata_status.set("正规式验证失败，请检查输入后重试")
             messagebox.showerror("正规式错误", str(exc))
 
     def generate_nfa(self) -> None:
@@ -404,7 +407,7 @@ class CompilerCourseApp:
         try:
             self.current_min_dfa = DFAMinimizer.minimize(self.current_dfa)
             self._refresh_mfa_panel()
-            self.automata_status.set("已根据当前 DFA 生成 MFA")
+            self.automata_status.set("已先去除 DFA 冗余状态，再生成 MFA")
         except Exception as exc:
             messagebox.showerror("生成 MFA 失败", str(exc))
 
