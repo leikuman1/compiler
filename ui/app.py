@@ -37,11 +37,27 @@ class CompilerCourseApp:
         self.module_status = tk.StringVar(value="当前模块：词法分析")
         self.lexer_status = tk.StringVar(value="词法分析程序已就绪")
         self.automata_status = tk.StringVar(value="请输入正规式后生成自动机")
+        self.ll1_sentence_var = tk.StringVar()
 
         self.regex_entry: ttk.Entry | None = None
         self.source_text: tk.Text | None = None
         self.token_tree: ttk.Treeview | None = None
         self.error_tree: ttk.Treeview | None = None
+        self.ll1_window: tk.Toplevel | None = None
+        self.ll1_grammar_text: tk.Text | None = None
+        self.ll1_first_tree: ttk.Treeview | None = None
+        self.ll1_follow_tree: ttk.Treeview | None = None
+        self.ll1_predict_tree: ttk.Treeview | None = None
+        self.ll1_steps_tree: ttk.Treeview | None = None
+        self.ll1_open_button: ttk.Button | None = None
+        self.ll1_confirm_button: ttk.Button | None = None
+        self.ll1_save_button: ttk.Button | None = None
+        self.ll1_first_button: ttk.Button | None = None
+        self.ll1_follow_button: ttk.Button | None = None
+        self.ll1_build_table_button: ttk.Button | None = None
+        self.ll1_one_step_display_button: ttk.Button | None = None
+        self.ll1_single_step_button: ttk.Button | None = None
+        self.ll1_exit_button: ttk.Button | None = None
         self.nfa_tree: ttk.Treeview | None = None
         self.dfa_tree: ttk.Treeview | None = None
         self.mfa_tree: ttk.Treeview | None = None
@@ -135,6 +151,7 @@ class CompilerCourseApp:
         compile_menu = tk.Menu(self.compile_button, tearoff=False, font=self.ui_font)
         compile_menu.add_command(label="词法分析程序(A)", command=self.run_lexer)
         compile_menu.add_command(label="NFA_DFA_MFA(N)", command=self.open_automata_window)
+        compile_menu.add_command(label="LL(1)预测分析(P)", command=self.open_ll1_window)
         self.compile_button["menu"] = compile_menu
 
     def _build_lexer_page(self, parent: ttk.Frame) -> None:
@@ -332,6 +349,216 @@ class CompilerCourseApp:
         button_bar.grid(row=2, column=0, sticky="ew", padx=10, pady=(10, 12))
         return tree, start_var, accept_var, button_bar
 
+    def open_ll1_window(self) -> None:
+        if self.ll1_window is not None and self.ll1_window.winfo_exists():
+            self.ll1_window.deiconify()
+            self.ll1_window.lift()
+            self.ll1_window.focus_force()
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("LL(1)预测分析")
+        window.geometry("1320x780")
+        window.protocol("WM_DELETE_WINDOW", self._close_ll1_window)
+        self.ll1_window = window
+
+        self._build_ll1_layout(window)
+        self._apply_widget_font(window)
+
+    def _build_ll1_layout(self, window: tk.Toplevel) -> None:
+        container = ttk.Frame(window, padding=10)
+        container.pack(fill="both", expand=True)
+        container.columnconfigure(0, weight=4, minsize=420)
+        container.columnconfigure(1, weight=6, minsize=760)
+        container.rowconfigure(0, weight=1)
+
+        left_panel = ttk.Frame(container)
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left_panel.columnconfigure(0, weight=1)
+        left_panel.rowconfigure(0, weight=3)
+        left_panel.rowconfigure(1, weight=2)
+        left_panel.rowconfigure(2, weight=0)
+        left_panel.rowconfigure(3, weight=2)
+
+        right_panel = ttk.Frame(container)
+        right_panel.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right_panel.columnconfigure(0, weight=1)
+        right_panel.rowconfigure(0, weight=3)
+        right_panel.rowconfigure(1, weight=4)
+
+        self._build_ll1_left_panel(left_panel)
+        self._build_ll1_right_panel(right_panel)
+
+    def _build_ll1_left_panel(self, parent: ttk.Frame) -> None:
+        grammar_frame = ttk.LabelFrame(parent, text="原始文法")
+        grammar_frame.grid(row=0, column=0, sticky="nsew")
+        grammar_frame.columnconfigure(0, weight=1)
+        grammar_frame.rowconfigure(2, weight=1)
+
+        actions = ttk.Frame(grammar_frame)
+        actions.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
+        self.ll1_open_button = ttk.Button(actions, text="打开文件")
+        self.ll1_open_button.pack(side="left", padx=(0, 6))
+        self.ll1_confirm_button = ttk.Button(actions, text="确认文法")
+        self.ll1_confirm_button.pack(side="left", padx=6)
+        self.ll1_save_button = ttk.Button(actions, text="保存文件")
+        self.ll1_save_button.pack(side="left", padx=6)
+
+        ttk.Label(
+            grammar_frame,
+            text="请输入形如E->ab的LL1文法，其中的空字符用$代替",
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", padx=10, pady=(0, 6))
+
+        grammar_text_frame = ttk.Frame(grammar_frame)
+        grammar_text_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        grammar_text_frame.rowconfigure(0, weight=1)
+        grammar_text_frame.columnconfigure(0, weight=1)
+
+        self.ll1_grammar_text = tk.Text(grammar_text_frame, font=self.text_font, wrap="none", height=12)
+        self.ll1_grammar_text.grid(row=0, column=0, sticky="nsew")
+
+        grammar_y = ttk.Scrollbar(grammar_text_frame, orient="vertical", command=self.ll1_grammar_text.yview)
+        grammar_y.grid(row=0, column=1, sticky="ns")
+        grammar_x = ttk.Scrollbar(grammar_text_frame, orient="horizontal", command=self.ll1_grammar_text.xview)
+        grammar_x.grid(row=1, column=0, sticky="ew")
+        self.ll1_grammar_text.configure(yscrollcommand=grammar_y.set, xscrollcommand=grammar_x.set)
+
+        first_container, self.ll1_first_tree = self._build_ll1_placeholder_tree(
+            parent,
+            "FIRST集",
+            (
+                ("symbol", "非终结符", 110),
+                ("result", "结果", 220),
+            ),
+        )
+        first_container.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+
+        first_follow_actions = ttk.Frame(parent)
+        first_follow_actions.grid(row=2, column=0, sticky="w", pady=10)
+        self.ll1_first_button = ttk.Button(first_follow_actions, text="求First集")
+        self.ll1_first_button.pack(side="left", padx=(0, 8))
+        self.ll1_follow_button = ttk.Button(first_follow_actions, text="求Follow集")
+        self.ll1_follow_button.pack(side="left")
+
+        follow_container, self.ll1_follow_tree = self._build_ll1_placeholder_tree(
+            parent,
+            "FOLLOW集",
+            (
+                ("symbol", "非终结符", 110),
+                ("result", "结果", 220),
+            ),
+        )
+        follow_container.grid(row=3, column=0, sticky="nsew")
+
+        for button in (
+            self.ll1_open_button,
+            self.ll1_confirm_button,
+            self.ll1_save_button,
+            self.ll1_first_button,
+            self.ll1_follow_button,
+        ):
+            if button is not None:
+                button.state(["disabled"])
+
+    def _build_ll1_right_panel(self, parent: ttk.Frame) -> None:
+        predict_frame = ttk.LabelFrame(parent, text="预测分析表")
+        predict_frame.grid(row=0, column=0, sticky="nsew")
+        predict_frame.columnconfigure(0, weight=1)
+        predict_frame.rowconfigure(1, weight=1)
+
+        predict_actions = ttk.Frame(predict_frame)
+        predict_actions.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
+        self.ll1_build_table_button = ttk.Button(predict_actions, text="构造预测分析表")
+        self.ll1_build_table_button.pack(side="left")
+        self.ll1_exit_button = ttk.Button(predict_actions, text="退出", command=self._close_ll1_window)
+        self.ll1_exit_button.pack(side="right")
+
+        predict_container, self.ll1_predict_tree = self._build_ll1_placeholder_tree(
+            predict_frame,
+            None,
+            (
+                ("nonterminal", "非终结符", 120),
+                ("terminal_1", "终结符1", 140),
+                ("terminal_2", "终结符2", 140),
+                ("terminal_3", "终结符3", 140),
+                ("terminal_4", "终结符4", 140),
+            ),
+            xscroll=True,
+        )
+        predict_container.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+
+        analysis_frame = ttk.LabelFrame(parent, text="句子分析")
+        analysis_frame.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        analysis_frame.columnconfigure(0, weight=1)
+        analysis_frame.rowconfigure(2, weight=1)
+
+        sentence_row = ttk.Frame(analysis_frame)
+        sentence_row.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
+        sentence_row.columnconfigure(1, weight=1)
+        ttk.Label(sentence_row, text="分析句子").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(sentence_row, textvariable=self.ll1_sentence_var).grid(row=0, column=1, sticky="ew")
+
+        step_actions = ttk.Frame(analysis_frame)
+        step_actions.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 6))
+        self.ll1_one_step_display_button = ttk.Button(step_actions, text="一步显示")
+        self.ll1_one_step_display_button.pack(side="left", padx=(0, 8))
+        self.ll1_single_step_button = ttk.Button(step_actions, text="单步显示")
+        self.ll1_single_step_button.pack(side="left")
+
+        steps_container, self.ll1_steps_tree = self._build_ll1_placeholder_tree(
+            analysis_frame,
+            None,
+            (
+                ("step", "步骤序号", 110),
+                ("stack", "符号栈", 180),
+                ("input", "输入串", 180),
+                ("production", "所用产生式", 280),
+            ),
+            xscroll=True,
+        )
+        steps_container.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
+
+        self.ll1_build_table_button.state(["disabled"])
+        self.ll1_one_step_display_button.state(["disabled"])
+        self.ll1_single_step_button.state(["disabled"])
+
+    def _build_ll1_placeholder_tree(
+        self,
+        parent: ttk.Frame,
+        title: str | None,
+        columns: tuple[tuple[str, str, int], ...],
+        *,
+        xscroll: bool = False,
+    ) -> tuple[ttk.Widget, ttk.Treeview]:
+        container: ttk.Widget
+        if title is None:
+            container = ttk.Frame(parent)
+        else:
+            container = ttk.LabelFrame(parent, text=title)
+
+        frame = ttk.Frame(container)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+
+        tree = ttk.Treeview(frame, columns=tuple(item[0] for item in columns), show="headings")
+        for key, heading_text, width in columns:
+            tree.heading(key, text=heading_text)
+            tree.column(key, width=width, anchor="center")
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        y_scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=y_scroll.set)
+
+        if xscroll:
+            x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
+            x_scroll.grid(row=1, column=0, sticky="ew")
+            tree.configure(xscrollcommand=x_scroll.set)
+
+        return container, tree
+
     def _close_automata_window(self) -> None:
         if self.automata_window is not None and self.automata_window.winfo_exists():
             self.automata_window.destroy()
@@ -346,6 +573,26 @@ class CompilerCourseApp:
         self.dfa_accept_var = None
         self.mfa_start_var = None
         self.mfa_accept_var = None
+
+    def _close_ll1_window(self) -> None:
+        if self.ll1_window is not None and self.ll1_window.winfo_exists():
+            self.ll1_window.destroy()
+        self.ll1_window = None
+        self.ll1_grammar_text = None
+        self.ll1_first_tree = None
+        self.ll1_follow_tree = None
+        self.ll1_predict_tree = None
+        self.ll1_steps_tree = None
+        self.ll1_open_button = None
+        self.ll1_confirm_button = None
+        self.ll1_save_button = None
+        self.ll1_first_button = None
+        self.ll1_follow_button = None
+        self.ll1_build_table_button = None
+        self.ll1_one_step_display_button = None
+        self.ll1_single_step_button = None
+        self.ll1_exit_button = None
+        self.ll1_sentence_var.set("")
 
     def toggle_edit_mode(self) -> None:
         self.edit_mode.set(not self.edit_mode.get())
