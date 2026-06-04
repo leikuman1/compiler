@@ -6,7 +6,19 @@ import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from compiler_project.core import DFAMinimizer, Determinizer, RegexParser, ThompsonBuilder
+from compiler_project.core import (
+    DFAMinimizer,
+    Determinizer,
+    LL1Error,
+    PredictTable,
+    RegexParser,
+    ThompsonBuilder,
+    analyze_sentence,
+    build_predict_table,
+    compute_first,
+    compute_follow,
+    parse_grammar,
+)
 from compiler_project.io import AutomataCodec, DotExporter
 from compiler_project.lexer import build_default_lexer
 
@@ -38,6 +50,15 @@ class CompilerCourseApp:
         self.lexer_status = tk.StringVar(value="词法分析程序已就绪")
         self.automata_status = tk.StringVar(value="请输入正规式后生成自动机")
         self.ll1_sentence_var = tk.StringVar()
+        self.current_ll1_file_path: Path | None = None
+        self.current_ll1_grammar = None
+        self.current_ll1_first_sets: dict[str, set[str]] | None = None
+        self.current_ll1_follow_sets: dict[str, set[str]] | None = None
+        self.current_ll1_predict_table: PredictTable | None = None
+        self.current_ll1_analysis_result = None
+        self.current_ll1_analysis_sentence = ""
+        self.current_ll1_step_cursor = 0
+        self.current_ll1_confirmed_text = ""
 
         self.regex_entry: ttk.Entry | None = None
         self.source_text: tk.Text | None = None
@@ -243,6 +264,8 @@ class CompilerCourseApp:
         window = tk.Toplevel(self.root)
         window.title("NFA_DFA_MFA")
         window.geometry("1320x780")
+        window.minsize(960, 600)
+        window.resizable(True, True)
         window.protocol("WM_DELETE_WINDOW", self._close_automata_window)
         self.automata_window = window
         self._apply_widget_font(window)
@@ -359,8 +382,11 @@ class CompilerCourseApp:
         window = tk.Toplevel(self.root)
         window.title("LL(1)预测分析")
         window.geometry("1320x780")
+        window.minsize(960, 600)
+        window.resizable(True, True)
         window.protocol("WM_DELETE_WINDOW", self._close_ll1_window)
         self.ll1_window = window
+        self.module_status.set("当前模块：LL(1)预测分析")
 
         self._build_ll1_layout(window)
         self._apply_widget_font(window)
@@ -397,11 +423,11 @@ class CompilerCourseApp:
 
         actions = ttk.Frame(grammar_frame)
         actions.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
-        self.ll1_open_button = ttk.Button(actions, text="打开文件")
+        self.ll1_open_button = ttk.Button(actions, text="打开文件", command=self.load_ll1_grammar_file)
         self.ll1_open_button.pack(side="left", padx=(0, 6))
-        self.ll1_confirm_button = ttk.Button(actions, text="确认文法")
+        self.ll1_confirm_button = ttk.Button(actions, text="确认文法", command=self.confirm_ll1_grammar)
         self.ll1_confirm_button.pack(side="left", padx=6)
-        self.ll1_save_button = ttk.Button(actions, text="保存文件")
+        self.ll1_save_button = ttk.Button(actions, text="保存文件", command=self.save_ll1_grammar_file)
         self.ll1_save_button.pack(side="left", padx=6)
 
         ttk.Label(
@@ -436,9 +462,9 @@ class CompilerCourseApp:
 
         first_follow_actions = ttk.Frame(parent)
         first_follow_actions.grid(row=2, column=0, sticky="w", pady=10)
-        self.ll1_first_button = ttk.Button(first_follow_actions, text="求First集")
+        self.ll1_first_button = ttk.Button(first_follow_actions, text="求First集", command=self.show_ll1_first)
         self.ll1_first_button.pack(side="left", padx=(0, 8))
-        self.ll1_follow_button = ttk.Button(first_follow_actions, text="求Follow集")
+        self.ll1_follow_button = ttk.Button(first_follow_actions, text="求Follow集", command=self.show_ll1_follow)
         self.ll1_follow_button.pack(side="left")
 
         follow_container, self.ll1_follow_tree = self._build_ll1_placeholder_tree(
@@ -451,15 +477,7 @@ class CompilerCourseApp:
         )
         follow_container.grid(row=3, column=0, sticky="nsew")
 
-        for button in (
-            self.ll1_open_button,
-            self.ll1_confirm_button,
-            self.ll1_save_button,
-            self.ll1_first_button,
-            self.ll1_follow_button,
-        ):
-            if button is not None:
-                button.state(["disabled"])
+        self._set_ll1_result_buttons_enabled(False)
 
     def _build_ll1_right_panel(self, parent: ttk.Frame) -> None:
         predict_frame = ttk.LabelFrame(parent, text="预测分析表")
@@ -469,7 +487,11 @@ class CompilerCourseApp:
 
         predict_actions = ttk.Frame(predict_frame)
         predict_actions.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
-        self.ll1_build_table_button = ttk.Button(predict_actions, text="构造预测分析表")
+        self.ll1_build_table_button = ttk.Button(
+            predict_actions,
+            text="构造预测分析表",
+            command=self.show_ll1_predict_table,
+        )
         self.ll1_build_table_button.pack(side="left")
         self.ll1_exit_button = ttk.Button(predict_actions, text="退出", command=self._close_ll1_window)
         self.ll1_exit_button.pack(side="right")
@@ -501,9 +523,17 @@ class CompilerCourseApp:
 
         step_actions = ttk.Frame(analysis_frame)
         step_actions.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 6))
-        self.ll1_one_step_display_button = ttk.Button(step_actions, text="一步显示")
+        self.ll1_one_step_display_button = ttk.Button(
+            step_actions,
+            text="一步显示",
+            command=self.show_ll1_all_steps,
+        )
         self.ll1_one_step_display_button.pack(side="left", padx=(0, 8))
-        self.ll1_single_step_button = ttk.Button(step_actions, text="单步显示")
+        self.ll1_single_step_button = ttk.Button(
+            step_actions,
+            text="单步显示",
+            command=self.show_ll1_next_step,
+        )
         self.ll1_single_step_button.pack(side="left")
 
         steps_container, self.ll1_steps_tree = self._build_ll1_placeholder_tree(
@@ -519,9 +549,7 @@ class CompilerCourseApp:
         )
         steps_container.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
 
-        self.ll1_build_table_button.state(["disabled"])
-        self.ll1_one_step_display_button.state(["disabled"])
-        self.ll1_single_step_button.state(["disabled"])
+        self._set_ll1_result_buttons_enabled(False)
 
     def _build_ll1_placeholder_tree(
         self,
@@ -559,6 +587,21 @@ class CompilerCourseApp:
 
         return container, tree
 
+    def _dialog_parent(self, window: tk.Toplevel | None = None) -> tk.Misc:
+        if window is not None:
+            try:
+                if window.winfo_exists():
+                    return window
+            except tk.TclError:
+                pass
+        return self.root
+
+    def _automata_dialog_parent(self) -> tk.Misc:
+        return self._dialog_parent(self.automata_window)
+
+    def _ll1_dialog_parent(self) -> tk.Misc:
+        return self._dialog_parent(self.ll1_window)
+
     def _close_automata_window(self) -> None:
         if self.automata_window is not None and self.automata_window.winfo_exists():
             self.automata_window.destroy()
@@ -592,7 +635,305 @@ class CompilerCourseApp:
         self.ll1_one_step_display_button = None
         self.ll1_single_step_button = None
         self.ll1_exit_button = None
+        self.current_ll1_file_path = None
+        self.current_ll1_grammar = None
+        self.current_ll1_first_sets = None
+        self.current_ll1_follow_sets = None
+        self.current_ll1_predict_table = None
+        self.current_ll1_analysis_result = None
+        self.current_ll1_analysis_sentence = ""
+        self.current_ll1_step_cursor = 0
+        self.current_ll1_confirmed_text = ""
         self.ll1_sentence_var.set("")
+        self.module_status.set("当前模块：词法分析")
+
+    def _set_ll1_result_buttons_enabled(self, enabled: bool) -> None:
+        for button in (
+            self.ll1_first_button,
+            self.ll1_follow_button,
+            self.ll1_build_table_button,
+            self.ll1_one_step_display_button,
+            self.ll1_single_step_button,
+        ):
+            if button is None:
+                continue
+            if enabled:
+                button.state(["!disabled"])
+            else:
+                button.state(["disabled"])
+
+    def _invalidate_ll1_state(self, *, clear_input: bool = False) -> None:
+        self.current_ll1_grammar = None
+        self.current_ll1_first_sets = None
+        self.current_ll1_follow_sets = None
+        self.current_ll1_predict_table = None
+        self.current_ll1_analysis_result = None
+        self.current_ll1_analysis_sentence = ""
+        self.current_ll1_step_cursor = 0
+        self.current_ll1_confirmed_text = ""
+        self._set_ll1_result_buttons_enabled(False)
+
+        for tree in (self.ll1_first_tree, self.ll1_follow_tree, self.ll1_predict_tree, self.ll1_steps_tree):
+            if tree is not None:
+                self._clear_tree(tree)
+
+        if clear_input:
+            self.ll1_sentence_var.set("")
+
+    def _get_ll1_default_dir(self) -> Path:
+        candidates = (
+            self.project_root / "实验3" / "LL1TestFile测试用例",
+            self.project_root / "实验三" / "LL1TestFile测试用例",
+            self.project_root / "实验3",
+            self.project_root / "实验三",
+        )
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return self.project_root
+
+    def _get_ll1_grammar_text(self) -> str:
+        if self.ll1_grammar_text is None:
+            return ""
+        return self.ll1_grammar_text.get("1.0", "end-1c")
+
+    def _set_ll1_grammar_text(self, text: str) -> None:
+        self._set_text(self.ll1_grammar_text, text)
+
+    def _ensure_ll1_confirmed(self) -> bool:
+        if self.current_ll1_grammar is None or self.current_ll1_predict_table is None:
+            messagebox.showwarning("尚未确认文法", "请先确认一个合法的 LL(1) 文法。", parent=self._ll1_dialog_parent())
+            return False
+
+        current_text = self._get_ll1_grammar_text()
+        if current_text != self.current_ll1_confirmed_text:
+            self._invalidate_ll1_state()
+            messagebox.showwarning("文法已修改", "文法内容已发生变化，请重新确认文法。", parent=self._ll1_dialog_parent())
+            return False
+
+        return True
+
+    def load_ll1_grammar_file(self) -> None:
+        self.open_ll1_window()
+        initial_dir = self.current_ll1_file_path.parent if self.current_ll1_file_path else self._get_ll1_default_dir()
+        path = filedialog.askopenfilename(
+            title="选择 LL(1) 文法文件",
+            parent=self._ll1_dialog_parent(),
+            initialdir=str(initial_dir),
+            filetypes=[("文本文件", "*.txt;*.TXT"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            text = self.codec.read_text_file(path)
+            self._set_ll1_grammar_text(text)
+            self.current_ll1_file_path = Path(path)
+            self._invalidate_ll1_state(clear_input=True)
+        except Exception as exc:
+            messagebox.showerror("读取失败", str(exc), parent=self._ll1_dialog_parent())
+
+    def save_ll1_grammar_file(self) -> None:
+        text = self._get_ll1_grammar_text()
+        if not text.strip():
+            messagebox.showwarning("暂无文法", "请输入或打开文法后再保存。", parent=self._ll1_dialog_parent())
+            return
+
+        initial_dir = self.current_ll1_file_path.parent if self.current_ll1_file_path else self._get_ll1_default_dir()
+        initial_name = self.current_ll1_file_path.name if self.current_ll1_file_path else "LL1_grammar.txt"
+        path = filedialog.asksaveasfilename(
+            title="保存 LL(1) 文法",
+            parent=self._ll1_dialog_parent(),
+            initialdir=str(initial_dir),
+            initialfile=initial_name,
+            defaultextension=".txt",
+            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            target = Path(path)
+            target.write_text(text, encoding="utf-8")
+            self.current_ll1_file_path = target
+            messagebox.showinfo("保存成功", f"文法文件已保存到：{target}", parent=self._ll1_dialog_parent())
+        except Exception as exc:
+            messagebox.showerror("保存失败", str(exc), parent=self._ll1_dialog_parent())
+
+    def confirm_ll1_grammar(self) -> None:
+        text = self._get_ll1_grammar_text()
+        try:
+            grammar = parse_grammar(text)
+            first_sets = compute_first(grammar)
+            follow_sets = compute_follow(grammar, first_sets)
+            predict_table = build_predict_table(grammar, first_sets, follow_sets)
+        except LL1Error as exc:
+            self._invalidate_ll1_state()
+            messagebox.showerror("文法错误", str(exc), parent=self._ll1_dialog_parent())
+            return
+        except Exception as exc:
+            self._invalidate_ll1_state()
+            messagebox.showerror("确认文法失败", str(exc), parent=self._ll1_dialog_parent())
+            return
+
+        self.current_ll1_grammar = grammar
+        self.current_ll1_first_sets = first_sets
+        self.current_ll1_follow_sets = follow_sets
+        self.current_ll1_predict_table = predict_table
+        self.current_ll1_analysis_result = None
+        self.current_ll1_analysis_sentence = ""
+        self.current_ll1_step_cursor = 0
+        self.current_ll1_confirmed_text = text
+        self._set_ll1_result_buttons_enabled(True)
+
+        for tree in (self.ll1_first_tree, self.ll1_follow_tree, self.ll1_predict_tree, self.ll1_steps_tree):
+            if tree is not None:
+                self._clear_tree(tree)
+
+        messagebox.showinfo(
+            "确认成功",
+            "文法已确认，可以查看 FIRST/FOLLOW、预测分析表并分析句子。",
+            parent=self._ll1_dialog_parent(),
+        )
+
+    def show_ll1_first(self) -> None:
+        if not self._ensure_ll1_confirmed():
+            return
+        if self.current_ll1_grammar is None or self.current_ll1_first_sets is None:
+            return
+        self._render_ll1_set_tree(
+            self.ll1_first_tree,
+            self.current_ll1_grammar.nonterminals,
+            self.current_ll1_first_sets,
+        )
+
+    def show_ll1_follow(self) -> None:
+        if not self._ensure_ll1_confirmed():
+            return
+        if self.current_ll1_grammar is None or self.current_ll1_follow_sets is None:
+            return
+        self._render_ll1_set_tree(
+            self.ll1_follow_tree,
+            self.current_ll1_grammar.nonterminals,
+            self.current_ll1_follow_sets,
+        )
+
+    def show_ll1_predict_table(self) -> None:
+        if not self._ensure_ll1_confirmed():
+            return
+        if self.current_ll1_predict_table is None:
+            return
+        self._render_ll1_predict_table(self.current_ll1_predict_table)
+
+    def show_ll1_all_steps(self) -> None:
+        result = self._analyze_ll1_sentence()
+        if result is None:
+            return
+        self.current_ll1_step_cursor = len(result.steps)
+        self._render_ll1_steps(result.steps)
+        self._show_ll1_analysis_message(result)
+
+    def show_ll1_next_step(self) -> None:
+        result = self._analyze_ll1_sentence()
+        if result is None:
+            return
+        if self.current_ll1_step_cursor >= len(result.steps):
+            self._show_ll1_analysis_message(result)
+            return
+
+        self.current_ll1_step_cursor += 1
+        self._render_ll1_steps(result.steps_prefix(self.current_ll1_step_cursor))
+        if self.current_ll1_step_cursor == len(result.steps):
+            self._show_ll1_analysis_message(result)
+
+    def _analyze_ll1_sentence(self):
+        if not self._ensure_ll1_confirmed():
+            return None
+        if self.current_ll1_grammar is None or self.current_ll1_predict_table is None:
+            return None
+
+        sentence = "".join(self.ll1_sentence_var.get().split())
+        if sentence != self.current_ll1_analysis_sentence:
+            self.current_ll1_analysis_result = None
+            self.current_ll1_step_cursor = 0
+            if self.ll1_steps_tree is not None:
+                self._clear_tree(self.ll1_steps_tree)
+
+        if self.current_ll1_analysis_result is None:
+            self.current_ll1_analysis_result = analyze_sentence(
+                self.current_ll1_grammar,
+                self.current_ll1_predict_table,
+                sentence,
+            )
+            self.current_ll1_analysis_sentence = sentence
+            self.current_ll1_step_cursor = 0
+
+        return self.current_ll1_analysis_result
+
+    def _render_ll1_set_tree(
+        self,
+        tree: ttk.Treeview | None,
+        symbols: tuple[str, ...],
+        values: dict[str, set[str]],
+    ) -> None:
+        if tree is None:
+            return
+        self._clear_tree(tree)
+        for symbol in symbols:
+            tree.insert(
+                "",
+                "end",
+                values=(symbol, self._format_ll1_symbol_set(values.get(symbol, set()))),
+            )
+
+    def _render_ll1_predict_table(self, table: PredictTable) -> None:
+        if self.ll1_predict_tree is None:
+            return
+
+        columns = [("nonterminal", "非终结符", 120)]
+        for index, symbol in enumerate(table.column_symbols, start=1):
+            columns.append((f"terminal_{index}", symbol, 110))
+        self._configure_tree_columns(self.ll1_predict_tree, tuple(columns))
+        self._clear_tree(self.ll1_predict_tree)
+
+        for nonterminal in table.row_symbols:
+            row = [nonterminal]
+            for terminal in table.column_symbols:
+                production = table.lookup(nonterminal, terminal)
+                row.append("" if production is None else production.text)
+            self.ll1_predict_tree.insert("", "end", values=tuple(row))
+
+    def _render_ll1_steps(self, steps) -> None:
+        if self.ll1_steps_tree is None:
+            return
+        self._clear_tree(self.ll1_steps_tree)
+        for step in steps:
+            self.ll1_steps_tree.insert(
+                "",
+                "end",
+                values=(step.index, step.stack_text, step.input_text, step.production_text),
+            )
+
+    def _show_ll1_analysis_message(self, result) -> None:
+        if result.accepted:
+            messagebox.showinfo("分析结果", result.message, parent=self._ll1_dialog_parent())
+        else:
+            messagebox.showerror("分析结果", result.message, parent=self._ll1_dialog_parent())
+
+    def _configure_tree_columns(
+        self,
+        tree: ttk.Treeview,
+        columns: tuple[tuple[str, str, int], ...],
+    ) -> None:
+        tree.configure(columns=tuple(item[0] for item in columns), show="headings")
+        for key, heading_text, width in columns:
+            tree.heading(key, text=heading_text)
+            tree.column(key, width=width, anchor="center")
+
+    @staticmethod
+    def _format_ll1_symbol_set(symbols: set[str]) -> str:
+        if not symbols:
+            return "{}"
+        ordered = sorted(symbols, key=lambda symbol: (symbol == "#", symbol == "$", symbol))
+        return "{" + ", ".join(ordered) + "}"
 
     def toggle_edit_mode(self) -> None:
         self.edit_mode.set(not self.edit_mode.get())
@@ -610,10 +951,10 @@ class CompilerCourseApp:
             self.regex_parser.parse(self.regex_var.get().strip())
             success_message = "正规式验证通过，可以继续生成 NFA / DFA / MFA。"
             self.automata_status.set(success_message)
-            messagebox.showinfo("验证结果", success_message)
+            messagebox.showinfo("验证结果", success_message, parent=self._automata_dialog_parent())
         except Exception as exc:
             self.automata_status.set("正规式验证失败，请检查输入后重试")
-            messagebox.showerror("正规式错误", str(exc))
+            messagebox.showerror("正规式错误", str(exc), parent=self._automata_dialog_parent())
 
     def generate_nfa(self) -> None:
         self.open_automata_window()
@@ -628,7 +969,7 @@ class CompilerCourseApp:
             self._clear_mfa_panel()
             self.automata_status.set("已根据正规式生成 NFA")
         except Exception as exc:
-            messagebox.showerror("生成 NFA 失败", str(exc))
+            messagebox.showerror("生成 NFA 失败", str(exc), parent=self._automata_dialog_parent())
 
     def generate_dfa(self) -> None:
         self.open_automata_window()
@@ -643,7 +984,7 @@ class CompilerCourseApp:
             self._clear_mfa_panel()
             self.automata_status.set("已根据当前 NFA 生成 DFA")
         except Exception as exc:
-            messagebox.showerror("生成 DFA 失败", str(exc))
+            messagebox.showerror("生成 DFA 失败", str(exc), parent=self._automata_dialog_parent())
 
     def generate_mfa(self) -> None:
         self.open_automata_window()
@@ -656,12 +997,13 @@ class CompilerCourseApp:
             self._refresh_mfa_panel()
             self.automata_status.set("已先去除 DFA 冗余状态，再生成 MFA")
         except Exception as exc:
-            messagebox.showerror("生成 MFA 失败", str(exc))
+            messagebox.showerror("生成 MFA 失败", str(exc), parent=self._automata_dialog_parent())
 
     def load_nfa_file(self) -> None:
         self.open_automata_window()
         path = filedialog.askopenfilename(
             title="选择 NFA 文件",
+            parent=self._automata_dialog_parent(),
             filetypes=[("NFA 文件", "*.nfa"), ("所有文件", "*.*")],
         )
         if not path:
@@ -675,12 +1017,13 @@ class CompilerCourseApp:
             self._clear_mfa_panel()
             self.automata_status.set(f"已读入 NFA 文件：{path}")
         except Exception as exc:
-            messagebox.showerror("读取 NFA 失败", str(exc))
+            messagebox.showerror("读取 NFA 失败", str(exc), parent=self._automata_dialog_parent())
 
     def load_dfa_file(self) -> None:
         self.open_automata_window()
         path = filedialog.askopenfilename(
             title="选择 DFA 文件",
+            parent=self._automata_dialog_parent(),
             filetypes=[("DFA 文件", "*.dfa"), ("所有文件", "*.*")],
         )
         if not path:
@@ -694,14 +1037,15 @@ class CompilerCourseApp:
             self._clear_mfa_panel()
             self.automata_status.set(f"已读入 DFA 文件：{path}")
         except Exception as exc:
-            messagebox.showerror("读取 DFA 失败", str(exc))
+            messagebox.showerror("读取 DFA 失败", str(exc), parent=self._automata_dialog_parent())
 
     def save_current_nfa(self) -> None:
         if self.current_nfa is None:
-            messagebox.showwarning("暂无 NFA", "请先生成或读入 NFA。")
+            messagebox.showwarning("暂无 NFA", "请先生成或读入 NFA。", parent=self._automata_dialog_parent())
             return
         path = filedialog.asksaveasfilename(
             title="保存 NFA",
+            parent=self._automata_dialog_parent(),
             defaultextension=".nfa",
             filetypes=[("NFA 文件", "*.nfa"), ("所有文件", "*.*")],
         )
@@ -712,10 +1056,11 @@ class CompilerCourseApp:
 
     def save_current_dfa(self) -> None:
         if self.current_dfa is None:
-            messagebox.showwarning("暂无 DFA", "请先生成或读入 DFA。")
+            messagebox.showwarning("暂无 DFA", "请先生成或读入 DFA。", parent=self._automata_dialog_parent())
             return
         path = filedialog.asksaveasfilename(
             title="保存 DFA",
+            parent=self._automata_dialog_parent(),
             defaultextension=".dfa",
             filetypes=[("DFA 文件", "*.dfa"), ("所有文件", "*.*")],
         )
@@ -727,11 +1072,12 @@ class CompilerCourseApp:
     def export_current_graph(self) -> None:
         automaton = self.current_min_dfa or self.current_dfa or self.current_nfa
         if automaton is None:
-            messagebox.showwarning("暂无自动机", "请先生成或读入自动机。")
+            messagebox.showwarning("暂无自动机", "请先生成或读入自动机。", parent=self._automata_dialog_parent())
             return
 
         path = filedialog.asksaveasfilename(
             title="导出自动机图",
+            parent=self._automata_dialog_parent(),
             defaultextension=".dot",
             filetypes=[("DOT 文件", "*.dot"), ("所有文件", "*.*")],
         )
@@ -747,11 +1093,12 @@ class CompilerCourseApp:
             else:
                 self.automata_status.set(f"已导出 DOT：{path}")
         except Exception as exc:
-            messagebox.showerror("导出失败", str(exc))
+            messagebox.showerror("导出失败", str(exc), parent=self._automata_dialog_parent())
 
     def _show_graph_preview(self, png_path: str) -> None:
         preview_window = tk.Toplevel(self.root)
         preview_window.title("自动机图预览")
+        preview_window.transient(self._automata_dialog_parent())
         self.preview_image = tk.PhotoImage(file=png_path)
         ttk.Label(preview_window, image=self.preview_image).pack(fill="both", expand=True)
 
