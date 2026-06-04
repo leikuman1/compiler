@@ -10,13 +10,19 @@ from compiler_project.core import (
     DFAMinimizer,
     Determinizer,
     LL1Error,
+    LRError,
+    LRTable,
     PredictTable,
     RegexParser,
     ThompsonBuilder,
+    analyze_lr_sentence,
     analyze_sentence,
+    build_lr_item_sets,
+    build_lr_table,
     build_predict_table,
     compute_first,
     compute_follow,
+    parse_lr_grammar,
     parse_grammar,
 )
 from compiler_project.io import AutomataCodec, DotExporter
@@ -50,6 +56,7 @@ class CompilerCourseApp:
         self.lexer_status = tk.StringVar(value="词法分析程序已就绪")
         self.automata_status = tk.StringVar(value="请输入正规式后生成自动机")
         self.ll1_sentence_var = tk.StringVar()
+        self.lr_sentence_var = tk.StringVar()
         self.current_ll1_file_path: Path | None = None
         self.current_ll1_grammar = None
         self.current_ll1_first_sets: dict[str, set[str]] | None = None
@@ -59,6 +66,14 @@ class CompilerCourseApp:
         self.current_ll1_analysis_sentence = ""
         self.current_ll1_step_cursor = 0
         self.current_ll1_confirmed_text = ""
+        self.current_lr_file_path: Path | None = None
+        self.current_lr_grammar = None
+        self.current_lr_item_sets = None
+        self.current_lr_table: LRTable | None = None
+        self.current_lr_analysis_result = None
+        self.current_lr_analysis_sentence = ""
+        self.current_lr_step_cursor = 0
+        self.current_lr_confirmed_text = ""
 
         self.regex_entry: ttk.Entry | None = None
         self.source_text: tk.Text | None = None
@@ -79,6 +94,19 @@ class CompilerCourseApp:
         self.ll1_one_step_display_button: ttk.Button | None = None
         self.ll1_single_step_button: ttk.Button | None = None
         self.ll1_exit_button: ttk.Button | None = None
+        self.lr_window: tk.Toplevel | None = None
+        self.lr_grammar_text: tk.Text | None = None
+        self.lr_item_set_tree: ttk.Treeview | None = None
+        self.lr_table_tree: ttk.Treeview | None = None
+        self.lr_result_tree: ttk.Treeview | None = None
+        self.lr_open_button: ttk.Button | None = None
+        self.lr_confirm_button: ttk.Button | None = None
+        self.lr_save_button: ttk.Button | None = None
+        self.lr_item_set_button: ttk.Button | None = None
+        self.lr_build_table_button: ttk.Button | None = None
+        self.lr_analyze_button: ttk.Button | None = None
+        self.lr_single_step_button: ttk.Button | None = None
+        self.lr_one_step_button: ttk.Button | None = None
         self.nfa_tree: ttk.Treeview | None = None
         self.dfa_tree: ttk.Treeview | None = None
         self.mfa_tree: ttk.Treeview | None = None
@@ -173,6 +201,7 @@ class CompilerCourseApp:
         compile_menu.add_command(label="词法分析程序(A)", command=self.run_lexer)
         compile_menu.add_command(label="NFA_DFA_MFA(N)", command=self.open_automata_window)
         compile_menu.add_command(label="LL(1)预测分析(P)", command=self.open_ll1_window)
+        compile_menu.add_command(label="LR分析(L)", command=self.open_lr_window)
         self.compile_button["menu"] = compile_menu
 
     def _build_lexer_page(self, parent: ttk.Frame) -> None:
@@ -587,6 +616,454 @@ class CompilerCourseApp:
 
         return container, tree
 
+    def open_lr_window(self) -> None:
+        if self.lr_window is not None and self.lr_window.winfo_exists():
+            self.lr_window.deiconify()
+            self.lr_window.lift()
+            self.lr_window.focus_force()
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("LR分析")
+        window.geometry("1320x780")
+        window.minsize(960, 600)
+        window.resizable(True, True)
+        window.protocol("WM_DELETE_WINDOW", self._close_lr_window)
+        self.lr_window = window
+        self.module_status.set("当前模块：LR分析")
+
+        self._build_lr_layout(window)
+        self._apply_widget_font(window)
+
+    def _build_lr_layout(self, window: tk.Toplevel) -> None:
+        container = ttk.Frame(window, padding=10)
+        container.pack(fill="both", expand=True)
+        container.columnconfigure(0, weight=4, minsize=420)
+        container.columnconfigure(1, weight=6, minsize=720)
+        container.rowconfigure(0, weight=1)
+
+        left_panel = ttk.Frame(container)
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left_panel.columnconfigure(0, weight=1)
+        left_panel.rowconfigure(0, weight=3)
+        left_panel.rowconfigure(1, weight=0)
+        left_panel.rowconfigure(2, weight=5)
+
+        right_panel = ttk.Frame(container)
+        right_panel.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right_panel.columnconfigure(0, weight=1)
+        right_panel.rowconfigure(0, weight=4)
+        right_panel.rowconfigure(1, weight=0)
+        right_panel.rowconfigure(2, weight=5)
+
+        self._build_lr_left_panel(left_panel)
+        self._build_lr_right_panel(right_panel)
+
+    def _build_lr_left_panel(self, parent: ttk.Frame) -> None:
+        grammar_frame = ttk.LabelFrame(parent, text="文法输入")
+        grammar_frame.grid(row=0, column=0, sticky="nsew")
+        grammar_frame.columnconfigure(0, weight=1)
+        grammar_frame.rowconfigure(4, weight=1)
+
+        action_row = ttk.Frame(grammar_frame)
+        action_row.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
+        for index in range(3):
+            action_row.columnconfigure(index, weight=1)
+
+        self.lr_open_button = ttk.Button(
+            action_row,
+            text="打开文件",
+            command=self.load_lr_grammar_file,
+        )
+        self.lr_open_button.grid(row=0, column=0, padx=6)
+        self.lr_confirm_button = ttk.Button(
+            action_row,
+            text="确认文法",
+            command=self.confirm_lr_grammar,
+        )
+        self.lr_confirm_button.grid(row=0, column=1, padx=6)
+        self.lr_save_button = ttk.Button(
+            action_row,
+            text="保存文件",
+            command=self.save_lr_grammar_file,
+        )
+        self.lr_save_button.grid(row=0, column=2, padx=6)
+
+        notices = (
+            "注意事项：请输入满足LR(0)判别的2型最简文法。一行一个产生式",
+            "注意事项：请输入形式如S->A 的产生式，空格用_表示，空用#表示",
+            "注意事项：开始符为第一个产生式的左部，非终结符用大写字母表示",
+        )
+        for row, notice in enumerate(notices, start=1):
+            ttk.Label(grammar_frame, text=notice).grid(row=row, column=0, sticky="w", padx=10, pady=(0, 4))
+
+        grammar_text_frame = ttk.Frame(grammar_frame)
+        grammar_text_frame.grid(row=4, column=0, sticky="nsew", padx=10, pady=(2, 10))
+        self.lr_grammar_text = self._build_lr_text_area(grammar_text_frame, readonly=False, height=8)
+
+        self.lr_item_set_button = ttk.Button(parent, text="生成项目族信息", command=self.show_lr_item_sets)
+        self.lr_item_set_button.grid(row=1, column=0, sticky="w", pady=10)
+        self.lr_item_set_button.state(["disabled"])
+
+        item_frame = ttk.LabelFrame(parent, text="项目族信息")
+        item_frame.grid(row=2, column=0, sticky="nsew")
+        self.lr_item_set_tree = self._build_lr_tree(
+            item_frame,
+            (
+                ("state", "状态编号", 80),
+                ("items", "项目集", 360),
+            ),
+        )
+
+    def _build_lr_right_panel(self, parent: ttk.Frame) -> None:
+        table_frame = ttk.LabelFrame(parent, text="LR分析表")
+        table_frame.grid(row=0, column=0, sticky="nsew")
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(1, weight=1)
+
+        table_action_row = ttk.Frame(table_frame)
+        table_action_row.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
+        self.lr_build_table_button = ttk.Button(
+            table_action_row,
+            text="构造LR分析表",
+            command=self.show_lr_table,
+        )
+        self.lr_build_table_button.pack(side="left")
+        self.lr_build_table_button.state(["disabled"])
+
+        table_text_frame = ttk.Frame(table_frame)
+        table_text_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.lr_table_tree = self._build_lr_tree(
+            table_text_frame,
+            (
+                ("state", "状态", 80),
+                ("placeholder", "", 120),
+            ),
+        )
+
+        sentence_frame = ttk.LabelFrame(parent, text="分析句子")
+        sentence_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        sentence_frame.columnconfigure(0, weight=1)
+
+        sentence_row = ttk.Frame(sentence_frame)
+        sentence_row.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 8))
+        sentence_row.columnconfigure(1, weight=1)
+        ttk.Label(sentence_row, text="待分析句子：").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(sentence_row, textvariable=self.lr_sentence_var).grid(row=0, column=1, sticky="ew")
+
+        sentence_actions = ttk.Frame(sentence_frame)
+        sentence_actions.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 10))
+        self.lr_analyze_button = ttk.Button(sentence_actions, text="分析", command=self.prepare_lr_analysis)
+        self.lr_analyze_button.pack(side="left", padx=(0, 8))
+        self.lr_single_step_button = ttk.Button(sentence_actions, text="单步显示", command=self.show_lr_next_step)
+        self.lr_single_step_button.pack(side="left", padx=8)
+        self.lr_one_step_button = ttk.Button(sentence_actions, text="一键显示", command=self.show_lr_all_steps)
+        self.lr_one_step_button.pack(side="left", padx=8)
+        for button in (self.lr_analyze_button, self.lr_single_step_button, self.lr_one_step_button):
+            button.state(["disabled"])
+
+        result_frame = ttk.LabelFrame(parent, text="分析结果")
+        result_frame.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        self.lr_result_tree = self._build_lr_tree(
+            result_frame,
+            (
+                ("step", "步骤", 70),
+                ("state_stack", "状态栈", 160),
+                ("symbol_stack", "符号栈", 160),
+                ("input", "输入串", 160),
+                ("action", "所用产生式", 240),
+            ),
+        )
+
+    def _build_lr_text_area(self, parent: ttk.Frame, *, readonly: bool, height: int) -> tk.Text:
+        parent.rowconfigure(0, weight=1)
+        parent.columnconfigure(0, weight=1)
+
+        text = tk.Text(parent, font=self.text_font, wrap="none", height=height)
+        text.grid(row=0, column=0, sticky="nsew")
+
+        y_scroll = ttk.Scrollbar(parent, orient="vertical", command=text.yview)
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll = ttk.Scrollbar(parent, orient="horizontal", command=text.xview)
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        text.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        if readonly:
+            text.configure(state="disabled")
+        return text
+
+    def _build_lr_tree(
+        self,
+        parent: ttk.Frame,
+        columns: tuple[tuple[str, str, int], ...],
+    ) -> ttk.Treeview:
+        parent.rowconfigure(0, weight=1)
+        parent.columnconfigure(0, weight=1)
+
+        tree = ttk.Treeview(parent, columns=tuple(item[0] for item in columns), show="headings")
+        for key, heading_text, width in columns:
+            tree.heading(key, text=heading_text)
+            tree.column(key, width=width, anchor="center")
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        y_scroll = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        return tree
+
+    def _get_lr_default_dir(self) -> Path:
+        sample_dir = Path(r"D:\school\compiler\实验4\LRTestFile测试用例")
+        if sample_dir.exists():
+            return sample_dir
+        return self.project_root
+
+    def _get_lr_grammar_text(self) -> str:
+        if self.lr_grammar_text is None:
+            return ""
+        return self.lr_grammar_text.get("1.0", "end-1c")
+
+    def _set_lr_grammar_text(self, text: str) -> None:
+        self._set_text(self.lr_grammar_text, text)
+
+    def _set_lr_button_state(self, *, item_sets: bool, table: bool, analysis: bool) -> None:
+        button_groups = (
+            ((self.lr_item_set_button,), item_sets),
+            ((self.lr_build_table_button,), table),
+            ((self.lr_analyze_button, self.lr_single_step_button, self.lr_one_step_button), analysis),
+        )
+        for buttons, enabled in button_groups:
+            for button in buttons:
+                if button is None:
+                    continue
+                if enabled:
+                    button.state(["!disabled"])
+                else:
+                    button.state(["disabled"])
+
+    def _invalidate_lr_state(self, *, clear_input: bool = False) -> None:
+        self.current_lr_grammar = None
+        self.current_lr_item_sets = None
+        self.current_lr_table = None
+        self.current_lr_analysis_result = None
+        self.current_lr_analysis_sentence = ""
+        self.current_lr_step_cursor = 0
+        self.current_lr_confirmed_text = ""
+        self._set_lr_button_state(item_sets=False, table=False, analysis=False)
+        for tree in (self.lr_item_set_tree, self.lr_table_tree, self.lr_result_tree):
+            if tree is not None:
+                self._clear_tree(tree)
+        if clear_input:
+            self.lr_sentence_var.set("")
+
+    def _ensure_lr_confirmed(self) -> bool:
+        if self.current_lr_grammar is None:
+            messagebox.showwarning("尚未确认文法", "请先确认一个合法的 LR(0) 文法。", parent=self._lr_dialog_parent())
+            return False
+        if self._get_lr_grammar_text() != self.current_lr_confirmed_text:
+            self._invalidate_lr_state()
+            messagebox.showwarning("文法已修改", "文法内容已发生变化，请重新确认文法。", parent=self._lr_dialog_parent())
+            return False
+        return True
+
+    def load_lr_grammar_file(self) -> None:
+        self.open_lr_window()
+        initial_dir = self.current_lr_file_path.parent if self.current_lr_file_path else self._get_lr_default_dir()
+        path = filedialog.askopenfilename(
+            title="选择 LR 文法文件",
+            parent=self._lr_dialog_parent(),
+            initialdir=str(initial_dir),
+            filetypes=[("文本文件", "*.txt;*.TXT"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            text = self.codec.read_text_file(path)
+            self._set_lr_grammar_text(text)
+            self.current_lr_file_path = Path(path)
+            self._invalidate_lr_state(clear_input=True)
+        except Exception as exc:
+            messagebox.showerror("读取失败", str(exc), parent=self._lr_dialog_parent())
+
+    def save_lr_grammar_file(self) -> None:
+        text = self._get_lr_grammar_text()
+        if not text.strip():
+            messagebox.showwarning("暂无文法", "请输入或打开文法后再保存。", parent=self._lr_dialog_parent())
+            return
+
+        initial_dir = self.current_lr_file_path.parent if self.current_lr_file_path else self._get_lr_default_dir()
+        initial_name = self.current_lr_file_path.name if self.current_lr_file_path else "LR_grammar.txt"
+        path = filedialog.asksaveasfilename(
+            title="保存 LR 文法",
+            parent=self._lr_dialog_parent(),
+            initialdir=str(initial_dir),
+            initialfile=initial_name,
+            defaultextension=".txt",
+            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            target = Path(path)
+            target.write_text(text, encoding="utf-8")
+            self.current_lr_file_path = target
+            messagebox.showinfo("保存成功", f"文法文件已保存到：{target}", parent=self._lr_dialog_parent())
+        except Exception as exc:
+            messagebox.showerror("保存失败", str(exc), parent=self._lr_dialog_parent())
+
+    def confirm_lr_grammar(self) -> None:
+        text = self._get_lr_grammar_text()
+        try:
+            grammar = parse_lr_grammar(text)
+        except LRError as exc:
+            self._invalidate_lr_state()
+            messagebox.showerror("文法错误", str(exc), parent=self._lr_dialog_parent())
+            return
+        except Exception as exc:
+            self._invalidate_lr_state()
+            messagebox.showerror("确认文法失败", str(exc), parent=self._lr_dialog_parent())
+            return
+
+        self.current_lr_grammar = grammar
+        self.current_lr_item_sets = None
+        self.current_lr_table = None
+        self.current_lr_analysis_result = None
+        self.current_lr_analysis_sentence = ""
+        self.current_lr_step_cursor = 0
+        self.current_lr_confirmed_text = text
+        self._set_lr_button_state(item_sets=True, table=False, analysis=False)
+        for tree in (self.lr_item_set_tree, self.lr_table_tree, self.lr_result_tree):
+            if tree is not None:
+                self._clear_tree(tree)
+        messagebox.showinfo("确认成功", "文法已确认，可以生成项目族信息。", parent=self._lr_dialog_parent())
+
+    def show_lr_item_sets(self) -> None:
+        if not self._ensure_lr_confirmed() or self.current_lr_grammar is None:
+            return
+        try:
+            if self.current_lr_item_sets is None:
+                self.current_lr_item_sets = build_lr_item_sets(self.current_lr_grammar)
+            self._render_lr_item_sets()
+            self.current_lr_table = None
+            self.current_lr_analysis_result = None
+            self.current_lr_step_cursor = 0
+            if self.lr_table_tree is not None:
+                self._clear_tree(self.lr_table_tree)
+            if self.lr_result_tree is not None:
+                self._clear_tree(self.lr_result_tree)
+            self._set_lr_button_state(item_sets=True, table=True, analysis=False)
+        except LRError as exc:
+            messagebox.showerror("生成项目族失败", str(exc), parent=self._lr_dialog_parent())
+
+    def show_lr_table(self) -> None:
+        if not self._ensure_lr_confirmed() or self.current_lr_grammar is None:
+            return
+        try:
+            if self.current_lr_item_sets is None:
+                self.current_lr_item_sets = build_lr_item_sets(self.current_lr_grammar)
+            self.current_lr_table = build_lr_table(self.current_lr_grammar, self.current_lr_item_sets)
+            self._render_lr_item_sets()
+            self._render_lr_table()
+            self.current_lr_analysis_result = None
+            self.current_lr_step_cursor = 0
+            if self.lr_result_tree is not None:
+                self._clear_tree(self.lr_result_tree)
+            self._set_lr_button_state(item_sets=True, table=True, analysis=True)
+        except LRError as exc:
+            self.current_lr_table = None
+            self._set_lr_button_state(item_sets=True, table=True, analysis=False)
+            messagebox.showerror("构造LR分析表失败", str(exc), parent=self._lr_dialog_parent())
+
+    def prepare_lr_analysis(self) -> None:
+        result = self._get_lr_analysis_result()
+        if result is None:
+            return
+        self.current_lr_step_cursor = min(1, len(result.steps))
+        self._render_lr_steps(result.steps_prefix(self.current_lr_step_cursor))
+
+    def show_lr_next_step(self) -> None:
+        result = self._get_lr_analysis_result()
+        if result is None:
+            return
+        if self.current_lr_step_cursor >= len(result.steps):
+            self._show_lr_analysis_message(result)
+            return
+        self.current_lr_step_cursor += 1
+        self._render_lr_steps(result.steps_prefix(self.current_lr_step_cursor))
+        if self.current_lr_step_cursor == len(result.steps):
+            self._show_lr_analysis_message(result)
+
+    def show_lr_all_steps(self) -> None:
+        result = self._get_lr_analysis_result()
+        if result is None:
+            return
+        self.current_lr_step_cursor = len(result.steps)
+        self._render_lr_steps(result.steps)
+        self._show_lr_analysis_message(result)
+
+    def _get_lr_analysis_result(self):
+        if not self._ensure_lr_confirmed():
+            return None
+        if self.current_lr_grammar is None or self.current_lr_table is None:
+            messagebox.showwarning("尚未构造分析表", "请先构造 LR 分析表。", parent=self._lr_dialog_parent())
+            return None
+
+        sentence = "".join(self.lr_sentence_var.get().split())
+        if sentence != self.current_lr_analysis_sentence:
+            self.current_lr_analysis_result = None
+            self.current_lr_step_cursor = 0
+            if self.lr_result_tree is not None:
+                self._clear_tree(self.lr_result_tree)
+
+        if self.current_lr_analysis_result is None:
+            self.current_lr_analysis_result = analyze_lr_sentence(
+                self.current_lr_grammar,
+                self.current_lr_table,
+                sentence,
+            )
+            self.current_lr_analysis_sentence = sentence
+            self.current_lr_step_cursor = 0
+        return self.current_lr_analysis_result
+
+    def _render_lr_item_sets(self) -> None:
+        if self.lr_item_set_tree is None or self.current_lr_item_sets is None:
+            return
+        self._clear_tree(self.lr_item_set_tree)
+        for item_set in self.current_lr_item_sets:
+            items_text = "; ".join(item.text for item in item_set.items)
+            self.lr_item_set_tree.insert("", "end", values=(item_set.index, items_text))
+
+    def _render_lr_table(self) -> None:
+        if self.lr_table_tree is None or self.current_lr_table is None:
+            return
+        columns = [("state", "状态", 70)]
+        for index, symbol in enumerate(self.current_lr_table.column_symbols, start=1):
+            columns.append((f"symbol_{index}", symbol, 80))
+        self._configure_tree_columns(self.lr_table_tree, tuple(columns))
+        self._clear_tree(self.lr_table_tree)
+        for state in self.current_lr_table.row_symbols:
+            row = [state]
+            for symbol in self.current_lr_table.column_symbols:
+                row.append(self.current_lr_table.lookup(state, symbol) or "")
+            self.lr_table_tree.insert("", "end", values=tuple(row))
+
+    def _render_lr_steps(self, steps) -> None:
+        if self.lr_result_tree is None:
+            return
+        self._clear_tree(self.lr_result_tree)
+        for step in steps:
+            self.lr_result_tree.insert(
+                "",
+                "end",
+                values=(step.index, step.state_stack, step.symbol_stack, step.input_text, step.action_text),
+            )
+
+    def _show_lr_analysis_message(self, result) -> None:
+        if result.accepted:
+            messagebox.showinfo("分析结果", result.message, parent=self._lr_dialog_parent())
+        else:
+            messagebox.showerror("分析结果", result.message, parent=self._lr_dialog_parent())
+
     def _dialog_parent(self, window: tk.Toplevel | None = None) -> tk.Misc:
         if window is not None:
             try:
@@ -601,6 +1078,9 @@ class CompilerCourseApp:
 
     def _ll1_dialog_parent(self) -> tk.Misc:
         return self._dialog_parent(self.ll1_window)
+
+    def _lr_dialog_parent(self) -> tk.Misc:
+        return self._dialog_parent(self.lr_window)
 
     def _close_automata_window(self) -> None:
         if self.automata_window is not None and self.automata_window.winfo_exists():
@@ -645,6 +1125,33 @@ class CompilerCourseApp:
         self.current_ll1_step_cursor = 0
         self.current_ll1_confirmed_text = ""
         self.ll1_sentence_var.set("")
+        self.module_status.set("当前模块：词法分析")
+
+    def _close_lr_window(self) -> None:
+        if self.lr_window is not None and self.lr_window.winfo_exists():
+            self.lr_window.destroy()
+        self.lr_window = None
+        self.lr_grammar_text = None
+        self.lr_item_set_tree = None
+        self.lr_table_tree = None
+        self.lr_result_tree = None
+        self.lr_open_button = None
+        self.lr_confirm_button = None
+        self.lr_save_button = None
+        self.lr_item_set_button = None
+        self.lr_build_table_button = None
+        self.lr_analyze_button = None
+        self.lr_single_step_button = None
+        self.lr_one_step_button = None
+        self.current_lr_file_path = None
+        self.current_lr_grammar = None
+        self.current_lr_item_sets = None
+        self.current_lr_table = None
+        self.current_lr_analysis_result = None
+        self.current_lr_analysis_sentence = ""
+        self.current_lr_step_cursor = 0
+        self.current_lr_confirmed_text = ""
+        self.lr_sentence_var.set("")
         self.module_status.set("当前模块：词法分析")
 
     def _set_ll1_result_buttons_enabled(self, enabled: bool) -> None:

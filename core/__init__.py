@@ -15,6 +15,21 @@ from .ll1 import (
     parse_grammar,
     validate_ll1,
 )
+from .lr import (
+    LRAnalysisResult,
+    LRAnalysisStep,
+    LRError,
+    LRGrammar,
+    LRItem,
+    LRItemSet,
+    LRProduction,
+    LRTable,
+    analyze_lr_sentence,
+    build_lr_item_sets,
+    build_lr_table,
+    parse_lr_grammar,
+    validate_lr0,
+)
 from .minimize import DFAMinimizer
 from .models import AcceptAction, DFA, EPSILON, NFA
 from .regex import RegexParser
@@ -31,6 +46,14 @@ __all__ = [
     "EPSILON",
     "Grammar",
     "LL1Error",
+    "LRAnalysisResult",
+    "LRAnalysisStep",
+    "LRError",
+    "LRGrammar",
+    "LRItem",
+    "LRItemSet",
+    "LRProduction",
+    "LRTable",
     "NFA",
     "PredictTable",
     "Production",
@@ -38,9 +61,14 @@ __all__ = [
     "AutomataSimulator",
     "ThompsonBuilder",
     "analyze_sentence",
+    "analyze_lr_sentence",
     "build_predict_table",
+    "build_lr_item_sets",
+    "build_lr_table",
     "compute_first",
     "compute_follow",
     "parse_grammar",
+    "parse_lr_grammar",
     "validate_ll1",
+    "validate_lr0",
 ]
