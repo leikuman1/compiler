@@ -7,6 +7,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from compiler_project.core import (
+    DEFAULT_EXPRESSION_GRAMMAR,
     DFAMinimizer,
     Determinizer,
     LL1Error,
@@ -14,16 +15,22 @@ from compiler_project.core import (
     LRTable,
     PredictTable,
     RegexParser,
+    SLRTable,
+    SLRTranslationError,
     ThompsonBuilder,
     analyze_lr_sentence,
     analyze_sentence,
     build_lr_item_sets,
     build_lr_table,
     build_predict_table,
+    build_slr_item_sets,
+    build_slr_table,
     compute_first,
     compute_follow,
+    parse_expression_grammar,
     parse_lr_grammar,
     parse_grammar,
+    translate_expression,
 )
 from compiler_project.io import AutomataCodec, DotExporter
 from compiler_project.lexer import build_default_lexer
@@ -57,6 +64,8 @@ class CompilerCourseApp:
         self.automata_status = tk.StringVar(value="请输入正规式后生成自动机")
         self.ll1_sentence_var = tk.StringVar()
         self.lr_sentence_var = tk.StringVar()
+        self.slr_expression_var = tk.StringVar(value="2*(3+5)")
+        self.slr_value_var = tk.StringVar(value="表达式值：")
         self.current_ll1_file_path: Path | None = None
         self.current_ll1_grammar = None
         self.current_ll1_first_sets: dict[str, set[str]] | None = None
@@ -74,6 +83,14 @@ class CompilerCourseApp:
         self.current_lr_analysis_sentence = ""
         self.current_lr_step_cursor = 0
         self.current_lr_confirmed_text = ""
+        self.current_slr_file_path: Path | None = None
+        self.current_slr_grammar = None
+        self.current_slr_item_sets = None
+        self.current_slr_table: SLRTable | None = None
+        self.current_slr_translation_result = None
+        self.current_slr_expression = ""
+        self.current_slr_step_cursor = 0
+        self.current_slr_confirmed_text = ""
 
         self.regex_entry: ttk.Entry | None = None
         self.source_text: tk.Text | None = None
@@ -107,6 +124,20 @@ class CompilerCourseApp:
         self.lr_analyze_button: ttk.Button | None = None
         self.lr_single_step_button: ttk.Button | None = None
         self.lr_one_step_button: ttk.Button | None = None
+        self.slr_window: tk.Toplevel | None = None
+        self.slr_grammar_text: tk.Text | None = None
+        self.slr_item_set_tree: ttk.Treeview | None = None
+        self.slr_table_tree: ttk.Treeview | None = None
+        self.slr_steps_tree: ttk.Treeview | None = None
+        self.slr_quad_tree: ttk.Treeview | None = None
+        self.slr_open_button: ttk.Button | None = None
+        self.slr_confirm_button: ttk.Button | None = None
+        self.slr_save_button: ttk.Button | None = None
+        self.slr_item_set_button: ttk.Button | None = None
+        self.slr_build_table_button: ttk.Button | None = None
+        self.slr_analyze_button: ttk.Button | None = None
+        self.slr_single_step_button: ttk.Button | None = None
+        self.slr_one_step_button: ttk.Button | None = None
         self.nfa_tree: ttk.Treeview | None = None
         self.dfa_tree: ttk.Treeview | None = None
         self.mfa_tree: ttk.Treeview | None = None
@@ -202,6 +233,7 @@ class CompilerCourseApp:
         compile_menu.add_command(label="NFA_DFA_MFA(N)", command=self.open_automata_window)
         compile_menu.add_command(label="LL(1)预测分析(P)", command=self.open_ll1_window)
         compile_menu.add_command(label="LR分析(L)", command=self.open_lr_window)
+        compile_menu.add_command(label="语法制导翻译(S)", command=self.open_slr_translation_window)
         self.compile_button["menu"] = compile_menu
 
     def _build_lexer_page(self, parent: ttk.Frame) -> None:
@@ -1064,6 +1096,454 @@ class CompilerCourseApp:
         else:
             messagebox.showerror("分析结果", result.message, parent=self._lr_dialog_parent())
 
+    def open_slr_translation_window(self) -> None:
+        if self.slr_window is not None and self.slr_window.winfo_exists():
+            self.slr_window.deiconify()
+            self.slr_window.lift()
+            self.slr_window.focus_force()
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("语法制导翻译")
+        window.geometry("1320x780")
+        window.minsize(960, 600)
+        window.resizable(True, True)
+        window.protocol("WM_DELETE_WINDOW", self._close_slr_translation_window)
+        self.slr_window = window
+        self.module_status.set("当前模块：语法制导翻译")
+
+        self._build_slr_translation_layout(window)
+        self._set_slr_grammar_text(DEFAULT_EXPRESSION_GRAMMAR)
+        self._set_slr_button_state(item_sets=False, table=False, analysis=False)
+        self._apply_widget_font(window)
+
+    def _build_slr_translation_layout(self, window: tk.Toplevel) -> None:
+        container = ttk.Frame(window, padding=10)
+        container.pack(fill="both", expand=True)
+        container.columnconfigure(0, weight=4, minsize=420)
+        container.columnconfigure(1, weight=6, minsize=720)
+        container.rowconfigure(0, weight=1)
+
+        left_panel = ttk.Frame(container)
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left_panel.columnconfigure(0, weight=1)
+        left_panel.rowconfigure(0, weight=3)
+        left_panel.rowconfigure(1, weight=0)
+        left_panel.rowconfigure(2, weight=5)
+
+        right_panel = ttk.Frame(container)
+        right_panel.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right_panel.columnconfigure(0, weight=1)
+        right_panel.rowconfigure(0, weight=4)
+        right_panel.rowconfigure(1, weight=4)
+        right_panel.rowconfigure(2, weight=2)
+
+        self._build_slr_left_panel(left_panel)
+        self._build_slr_right_panel(right_panel)
+
+    def _build_slr_left_panel(self, parent: ttk.Frame) -> None:
+        grammar_frame = ttk.LabelFrame(parent, text="文法输入")
+        grammar_frame.grid(row=0, column=0, sticky="nsew")
+        grammar_frame.columnconfigure(0, weight=1)
+        grammar_frame.rowconfigure(3, weight=1)
+
+        action_row = ttk.Frame(grammar_frame)
+        action_row.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
+        for index in range(3):
+            action_row.columnconfigure(index, weight=1)
+
+        self.slr_open_button = ttk.Button(action_row, text="打开文件", command=self.load_slr_grammar_file)
+        self.slr_open_button.grid(row=0, column=0, padx=6)
+        self.slr_confirm_button = ttk.Button(action_row, text="确认文法", command=self.confirm_slr_grammar)
+        self.slr_confirm_button.grid(row=0, column=1, padx=6)
+        self.slr_save_button = ttk.Button(action_row, text="保存文件", command=self.save_slr_grammar_file)
+        self.slr_save_button.grid(row=0, column=2, padx=6)
+
+        notices = (
+            "默认文法：E->E+T|E-T|T，T->T*F|T/F|F，F->(E)|d",
+            "说明：d 表示整数 token，表达式支持 +、-、*、/、(、)",
+        )
+        for row, notice in enumerate(notices, start=1):
+            ttk.Label(grammar_frame, text=notice).grid(row=row, column=0, sticky="w", padx=10, pady=(0, 4))
+
+        grammar_text_frame = ttk.Frame(grammar_frame)
+        grammar_text_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=(2, 10))
+        self.slr_grammar_text = self._build_lr_text_area(grammar_text_frame, readonly=False, height=8)
+
+        self.slr_item_set_button = ttk.Button(parent, text="生成项目集族", command=self.show_slr_item_sets)
+        self.slr_item_set_button.grid(row=1, column=0, sticky="w", pady=10)
+
+        item_frame = ttk.LabelFrame(parent, text="状态信息 / 项目集族")
+        item_frame.grid(row=2, column=0, sticky="nsew")
+        self.slr_item_set_tree = self._build_lr_tree(
+            item_frame,
+            (
+                ("state", "状态编号", 80),
+                ("items", "项目集", 420),
+            ),
+        )
+
+    def _build_slr_right_panel(self, parent: ttk.Frame) -> None:
+        table_frame = ttk.LabelFrame(parent, text="SLR(1)分析表")
+        table_frame.grid(row=0, column=0, sticky="nsew")
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(1, weight=1)
+
+        table_action_row = ttk.Frame(table_frame)
+        table_action_row.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
+        self.slr_build_table_button = ttk.Button(
+            table_action_row,
+            text="构造SLR分析表",
+            command=self.show_slr_table,
+        )
+        self.slr_build_table_button.pack(side="left")
+
+        table_tree_frame = ttk.Frame(table_frame)
+        table_tree_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.slr_table_tree = self._build_lr_tree(
+            table_tree_frame,
+            (
+                ("state", "状态", 70),
+                ("placeholder", "", 120),
+            ),
+        )
+
+        sentence_frame = ttk.LabelFrame(parent, text="分析句子")
+        sentence_frame.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        sentence_frame.columnconfigure(0, weight=1)
+        sentence_frame.rowconfigure(2, weight=1)
+
+        sentence_row = ttk.Frame(sentence_frame)
+        sentence_row.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 8))
+        sentence_row.columnconfigure(1, weight=1)
+        ttk.Label(sentence_row, text="输入串：").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(sentence_row, textvariable=self.slr_expression_var).grid(row=0, column=1, sticky="ew")
+
+        sentence_actions = ttk.Frame(sentence_frame)
+        sentence_actions.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 8))
+        self.slr_analyze_button = ttk.Button(sentence_actions, text="分析", command=self.prepare_slr_translation)
+        self.slr_analyze_button.pack(side="left", padx=(0, 8))
+        self.slr_single_step_button = ttk.Button(sentence_actions, text="单步显示", command=self.show_slr_next_step)
+        self.slr_single_step_button.pack(side="left", padx=8)
+        self.slr_one_step_button = ttk.Button(sentence_actions, text="一键显示", command=self.show_slr_all_steps)
+        self.slr_one_step_button.pack(side="left", padx=8)
+
+        steps_frame = ttk.Frame(sentence_frame)
+        steps_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.slr_steps_tree = self._build_lr_tree(
+            steps_frame,
+            (
+                ("step", "步骤", 70),
+                ("state_stack", "状态栈", 150),
+                ("symbol_stack", "符号栈", 150),
+                ("input", "输入串", 150),
+                ("action", "ACTION", 150),
+                ("goto", "GOTO", 90),
+                ("semantic_stack", "语义栈", 220),
+            ),
+        )
+
+        quad_frame = ttk.LabelFrame(parent, text="四元式序列")
+        quad_frame.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        quad_frame.columnconfigure(0, weight=1)
+        quad_frame.rowconfigure(1, weight=1)
+        ttk.Label(quad_frame, textvariable=self.slr_value_var).grid(row=0, column=0, sticky="w", padx=10, pady=(8, 4))
+        quad_tree_frame = ttk.Frame(quad_frame)
+        quad_tree_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.slr_quad_tree = self._build_lr_tree(
+            quad_tree_frame,
+            (
+                ("index", "序号", 70),
+                ("quad", "四元式", 360),
+            ),
+        )
+
+    def _get_slr_default_dir(self) -> Path:
+        return self.project_root
+
+    def _get_slr_grammar_text(self) -> str:
+        if self.slr_grammar_text is None:
+            return ""
+        return self.slr_grammar_text.get("1.0", "end-1c")
+
+    def _set_slr_grammar_text(self, text: str) -> None:
+        self._set_text(self.slr_grammar_text, text)
+
+    def _set_slr_button_state(self, *, item_sets: bool, table: bool, analysis: bool) -> None:
+        button_groups = (
+            ((self.slr_item_set_button,), item_sets),
+            ((self.slr_build_table_button,), table),
+            ((self.slr_analyze_button, self.slr_single_step_button, self.slr_one_step_button), analysis),
+        )
+        for buttons, enabled in button_groups:
+            for button in buttons:
+                if button is None:
+                    continue
+                if enabled:
+                    button.state(["!disabled"])
+                else:
+                    button.state(["disabled"])
+
+    def _invalidate_slr_state(self, *, clear_input: bool = False) -> None:
+        self.current_slr_grammar = None
+        self.current_slr_item_sets = None
+        self.current_slr_table = None
+        self.current_slr_translation_result = None
+        self.current_slr_expression = ""
+        self.current_slr_step_cursor = 0
+        self.current_slr_confirmed_text = ""
+        self.slr_value_var.set("表达式值：")
+        self._set_slr_button_state(item_sets=False, table=False, analysis=False)
+        for tree in (self.slr_item_set_tree, self.slr_table_tree, self.slr_steps_tree, self.slr_quad_tree):
+            if tree is not None:
+                self._clear_tree(tree)
+        if clear_input:
+            self.slr_expression_var.set("2*(3+5)")
+
+    def _ensure_slr_confirmed(self) -> bool:
+        if self.current_slr_grammar is None:
+            messagebox.showwarning("尚未确认文法", "请先确认一个合法的 SLR(1) 文法。", parent=self._slr_dialog_parent())
+            return False
+        if self._get_slr_grammar_text() != self.current_slr_confirmed_text:
+            self._invalidate_slr_state()
+            messagebox.showwarning("文法已修改", "文法内容已发生变化，请重新确认文法。", parent=self._slr_dialog_parent())
+            return False
+        return True
+
+    def load_slr_grammar_file(self) -> None:
+        self.open_slr_translation_window()
+        initial_dir = self.current_slr_file_path.parent if self.current_slr_file_path else self._get_slr_default_dir()
+        path = filedialog.askopenfilename(
+            title="选择 SLR(1) 文法文件",
+            parent=self._slr_dialog_parent(),
+            initialdir=str(initial_dir),
+            filetypes=[("文本文件", "*.txt;*.TXT"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            text = self.codec.read_text_file(path)
+            self._set_slr_grammar_text(text)
+            self.current_slr_file_path = Path(path)
+            self._invalidate_slr_state(clear_input=True)
+        except Exception as exc:
+            messagebox.showerror("读取失败", str(exc), parent=self._slr_dialog_parent())
+
+    def save_slr_grammar_file(self) -> None:
+        text = self._get_slr_grammar_text()
+        if not text.strip():
+            messagebox.showwarning("暂无文法", "请输入或打开文法后再保存。", parent=self._slr_dialog_parent())
+            return
+
+        initial_dir = self.current_slr_file_path.parent if self.current_slr_file_path else self._get_slr_default_dir()
+        initial_name = self.current_slr_file_path.name if self.current_slr_file_path else "SLR_translation_grammar.txt"
+        path = filedialog.asksaveasfilename(
+            title="保存 SLR(1) 文法",
+            parent=self._slr_dialog_parent(),
+            initialdir=str(initial_dir),
+            initialfile=initial_name,
+            defaultextension=".txt",
+            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            target = Path(path)
+            target.write_text(text, encoding="utf-8")
+            self.current_slr_file_path = target
+            messagebox.showinfo("保存成功", f"文法文件已保存到：{target}", parent=self._slr_dialog_parent())
+        except Exception as exc:
+            messagebox.showerror("保存失败", str(exc), parent=self._slr_dialog_parent())
+
+    def confirm_slr_grammar(self) -> None:
+        text = self._get_slr_grammar_text()
+        try:
+            grammar = parse_expression_grammar(text)
+        except SLRTranslationError as exc:
+            self._invalidate_slr_state()
+            messagebox.showerror("文法错误", str(exc), parent=self._slr_dialog_parent())
+            return
+        except Exception as exc:
+            self._invalidate_slr_state()
+            messagebox.showerror("确认文法失败", str(exc), parent=self._slr_dialog_parent())
+            return
+
+        self.current_slr_grammar = grammar
+        self.current_slr_item_sets = None
+        self.current_slr_table = None
+        self.current_slr_translation_result = None
+        self.current_slr_expression = ""
+        self.current_slr_step_cursor = 0
+        self.current_slr_confirmed_text = text
+        self.slr_value_var.set("表达式值：")
+        self._set_slr_button_state(item_sets=True, table=False, analysis=False)
+        for tree in (self.slr_item_set_tree, self.slr_table_tree, self.slr_steps_tree, self.slr_quad_tree):
+            if tree is not None:
+                self._clear_tree(tree)
+        messagebox.showinfo("确认成功", "文法已确认，可以生成项目集族。", parent=self._slr_dialog_parent())
+
+    def show_slr_item_sets(self) -> None:
+        if not self._ensure_slr_confirmed() or self.current_slr_grammar is None:
+            return
+        try:
+            if self.current_slr_item_sets is None:
+                self.current_slr_item_sets = build_slr_item_sets(self.current_slr_grammar)
+            self._render_slr_item_sets()
+            self.current_slr_table = None
+            self.current_slr_translation_result = None
+            self.current_slr_step_cursor = 0
+            self.slr_value_var.set("表达式值：")
+            for tree in (self.slr_table_tree, self.slr_steps_tree, self.slr_quad_tree):
+                if tree is not None:
+                    self._clear_tree(tree)
+            self._set_slr_button_state(item_sets=True, table=True, analysis=False)
+        except SLRTranslationError as exc:
+            messagebox.showerror("生成项目集族失败", str(exc), parent=self._slr_dialog_parent())
+
+    def show_slr_table(self) -> None:
+        if not self._ensure_slr_confirmed() or self.current_slr_grammar is None:
+            return
+        try:
+            if self.current_slr_item_sets is None:
+                self.current_slr_item_sets = build_slr_item_sets(self.current_slr_grammar)
+            self.current_slr_table = build_slr_table(self.current_slr_grammar, self.current_slr_item_sets)
+            self._render_slr_item_sets()
+            self._render_slr_table()
+            self.current_slr_translation_result = None
+            self.current_slr_step_cursor = 0
+            self.slr_value_var.set("表达式值：")
+            for tree in (self.slr_steps_tree, self.slr_quad_tree):
+                if tree is not None:
+                    self._clear_tree(tree)
+            self._set_slr_button_state(item_sets=True, table=True, analysis=True)
+        except SLRTranslationError as exc:
+            self.current_slr_table = None
+            self._set_slr_button_state(item_sets=True, table=True, analysis=False)
+            messagebox.showerror("构造SLR分析表失败", str(exc), parent=self._slr_dialog_parent())
+
+    def prepare_slr_translation(self) -> None:
+        result = self._get_slr_translation_result()
+        if result is None:
+            return
+        self.current_slr_step_cursor = min(1, len(result.steps))
+        self._render_slr_steps(result.steps_prefix(self.current_slr_step_cursor))
+        self._clear_slr_quad_output()
+
+    def show_slr_next_step(self) -> None:
+        result = self._get_slr_translation_result()
+        if result is None:
+            return
+        if self.current_slr_step_cursor >= len(result.steps):
+            self._render_slr_quad_output(result)
+            self._show_slr_translation_message(result)
+            return
+        self.current_slr_step_cursor += 1
+        self._render_slr_steps(result.steps_prefix(self.current_slr_step_cursor))
+        if self.current_slr_step_cursor == len(result.steps):
+            self._render_slr_quad_output(result)
+            self._show_slr_translation_message(result)
+
+    def show_slr_all_steps(self) -> None:
+        result = self._get_slr_translation_result()
+        if result is None:
+            return
+        self.current_slr_step_cursor = len(result.steps)
+        self._render_slr_steps(result.steps)
+        self._render_slr_quad_output(result)
+        self._show_slr_translation_message(result)
+
+    def _get_slr_translation_result(self):
+        if not self._ensure_slr_confirmed():
+            return None
+        if self.current_slr_grammar is None or self.current_slr_table is None:
+            messagebox.showwarning("尚未构造分析表", "请先构造 SLR(1) 分析表。", parent=self._slr_dialog_parent())
+            return None
+
+        expression = self.slr_expression_var.get().strip()
+        if expression != self.current_slr_expression:
+            self.current_slr_translation_result = None
+            self.current_slr_step_cursor = 0
+            self._clear_slr_quad_output()
+            if self.slr_steps_tree is not None:
+                self._clear_tree(self.slr_steps_tree)
+
+        if self.current_slr_translation_result is None:
+            try:
+                self.current_slr_translation_result = translate_expression(
+                    self.current_slr_grammar,
+                    self.current_slr_table,
+                    expression,
+                )
+            except SLRTranslationError as exc:
+                messagebox.showerror("分析失败", str(exc), parent=self._slr_dialog_parent())
+                return None
+            self.current_slr_expression = expression
+            self.current_slr_step_cursor = 0
+        return self.current_slr_translation_result
+
+    def _render_slr_item_sets(self) -> None:
+        if self.slr_item_set_tree is None or self.current_slr_item_sets is None:
+            return
+        self._clear_tree(self.slr_item_set_tree)
+        for item_set in self.current_slr_item_sets:
+            items_text = "; ".join(item.text for item in item_set.items)
+            self.slr_item_set_tree.insert("", "end", values=(item_set.index, items_text))
+
+    def _render_slr_table(self) -> None:
+        if self.slr_table_tree is None or self.current_slr_table is None:
+            return
+        columns = [("state", "状态", 70)]
+        for index, symbol in enumerate(self.current_slr_table.column_symbols, start=1):
+            columns.append((f"symbol_{index}", symbol, 80))
+        self._configure_tree_columns(self.slr_table_tree, tuple(columns))
+        self._clear_tree(self.slr_table_tree)
+        for state in self.current_slr_table.row_symbols:
+            row = [state]
+            for symbol in self.current_slr_table.column_symbols:
+                row.append(self.current_slr_table.lookup(state, symbol) or "")
+            self.slr_table_tree.insert("", "end", values=tuple(row))
+
+    def _render_slr_steps(self, steps) -> None:
+        if self.slr_steps_tree is None:
+            return
+        self._clear_tree(self.slr_steps_tree)
+        for step in steps:
+            self.slr_steps_tree.insert(
+                "",
+                "end",
+                values=(
+                    step.index,
+                    step.state_stack,
+                    step.symbol_stack,
+                    step.input_text,
+                    step.action_text,
+                    step.goto_text,
+                    step.semantic_stack,
+                ),
+            )
+
+    def _clear_slr_quad_output(self) -> None:
+        self.slr_value_var.set("表达式值：")
+        if self.slr_quad_tree is not None:
+            self._clear_tree(self.slr_quad_tree)
+
+    def _render_slr_quad_output(self, result) -> None:
+        if result.accepted and result.value is not None:
+            self.slr_value_var.set(f"表达式值：{result.value}")
+        else:
+            self.slr_value_var.set("表达式值：")
+        if self.slr_quad_tree is None:
+            return
+        self._clear_tree(self.slr_quad_tree)
+        for quadruple in result.quadruples:
+            self.slr_quad_tree.insert("", "end", values=(quadruple.index, quadruple.text))
+
+    def _show_slr_translation_message(self, result) -> None:
+        if result.accepted:
+            messagebox.showinfo("分析结果", result.message, parent=self._slr_dialog_parent())
+        else:
+            messagebox.showerror("分析结果", result.message, parent=self._slr_dialog_parent())
+
     def _dialog_parent(self, window: tk.Toplevel | None = None) -> tk.Misc:
         if window is not None:
             try:
@@ -1081,6 +1561,9 @@ class CompilerCourseApp:
 
     def _lr_dialog_parent(self) -> tk.Misc:
         return self._dialog_parent(self.lr_window)
+
+    def _slr_dialog_parent(self) -> tk.Misc:
+        return self._dialog_parent(self.slr_window)
 
     def _close_automata_window(self) -> None:
         if self.automata_window is not None and self.automata_window.winfo_exists():
@@ -1152,6 +1635,35 @@ class CompilerCourseApp:
         self.current_lr_step_cursor = 0
         self.current_lr_confirmed_text = ""
         self.lr_sentence_var.set("")
+        self.module_status.set("当前模块：词法分析")
+
+    def _close_slr_translation_window(self) -> None:
+        if self.slr_window is not None and self.slr_window.winfo_exists():
+            self.slr_window.destroy()
+        self.slr_window = None
+        self.slr_grammar_text = None
+        self.slr_item_set_tree = None
+        self.slr_table_tree = None
+        self.slr_steps_tree = None
+        self.slr_quad_tree = None
+        self.slr_open_button = None
+        self.slr_confirm_button = None
+        self.slr_save_button = None
+        self.slr_item_set_button = None
+        self.slr_build_table_button = None
+        self.slr_analyze_button = None
+        self.slr_single_step_button = None
+        self.slr_one_step_button = None
+        self.current_slr_file_path = None
+        self.current_slr_grammar = None
+        self.current_slr_item_sets = None
+        self.current_slr_table = None
+        self.current_slr_translation_result = None
+        self.current_slr_expression = ""
+        self.current_slr_step_cursor = 0
+        self.current_slr_confirmed_text = ""
+        self.slr_expression_var.set("2*(3+5)")
+        self.slr_value_var.set("表达式值：")
         self.module_status.set("当前模块：词法分析")
 
     def _set_ll1_result_buttons_enabled(self, enabled: bool) -> None:

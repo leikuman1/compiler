@@ -34,6 +34,22 @@ from .minimize import DFAMinimizer
 from .models import AcceptAction, DFA, EPSILON, NFA
 from .regex import RegexParser
 from .simulate import AutomataSimulator
+from .slr_translation import (
+    DEFAULT_EXPRESSION_GRAMMAR,
+    Quadruple,
+    SLRGrammar,
+    SLRItem,
+    SLRItemSet,
+    SLRProduction,
+    SLRTable,
+    SLRTranslationError,
+    TranslationResult,
+    TranslationStep,
+    build_slr_item_sets,
+    build_slr_table,
+    parse_expression_grammar,
+    translate_expression,
+)
 from .thompson import ThompsonBuilder
 
 __all__ = [
@@ -42,6 +58,7 @@ __all__ = [
     "AnalysisStep",
     "DFA",
     "DFAMinimizer",
+    "DEFAULT_EXPRESSION_GRAMMAR",
     "Determinizer",
     "EPSILON",
     "Grammar",
@@ -57,18 +74,31 @@ __all__ = [
     "NFA",
     "PredictTable",
     "Production",
+    "Quadruple",
     "RegexParser",
+    "SLRGrammar",
+    "SLRItem",
+    "SLRItemSet",
+    "SLRProduction",
+    "SLRTable",
+    "SLRTranslationError",
     "AutomataSimulator",
     "ThompsonBuilder",
+    "TranslationResult",
+    "TranslationStep",
     "analyze_sentence",
     "analyze_lr_sentence",
     "build_predict_table",
     "build_lr_item_sets",
     "build_lr_table",
+    "build_slr_item_sets",
+    "build_slr_table",
     "compute_first",
     "compute_follow",
+    "parse_expression_grammar",
     "parse_grammar",
     "parse_lr_grammar",
+    "translate_expression",
     "validate_ll1",
     "validate_lr0",
 ]
